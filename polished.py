@@ -111,10 +111,10 @@ def draw_app_icon(surface, app_name, x, y, width, height, is_centered=False, is_
     
     pygame.draw.rect(surface, color, rect, border_radius=border_radius)
     
-    # Draw green selection border if selected
+    # Draw white selection border if selected
     if is_selected:
         selection_rect = pygame.Rect(rect.x - 6, rect.y - 6, rect.width + 12, rect.height + 12)
-        pygame.draw.rect(surface, (0, 255, 0), selection_rect, width=8, border_radius=border_radius)
+        pygame.draw.rect(surface, (255, 255, 255), selection_rect, width=8, border_radius=border_radius)
     
     # Draw first letter as icon
     icon_font = pygame.font.Font(None, int(120 * (width / 280)))  # Scale with card size
@@ -411,15 +411,13 @@ def main():
             index_y = int(index_tip.y * WINDOW_HEIGHT)
             
             is_pinch = is_pinching(right_hand, threshold=0.08)
-            cursor_color = (255, 0, 0) if is_pinch else (0, 255, 0)
             
             if is_pinch:
-                pygame.draw.line(screen, (255, 0, 0), (thumb_x, thumb_y), (index_x, index_y), 3)
+                pygame.draw.line(screen, (255, 255, 255), (thumb_x, thumb_y), (index_x, index_y), 2)
             
-            pygame.draw.circle(screen, cursor_color, (thumb_x, thumb_y), 15)
-            pygame.draw.circle(screen, (255, 255, 255), (thumb_x, thumb_y), 15, 2)
-            pygame.draw.circle(screen, cursor_color, (index_x, index_y), 15)
-            pygame.draw.circle(screen, (255, 255, 255), (index_x, index_y), 15, 2)
+            # Draw white dots on fingertips
+            pygame.draw.circle(screen, (255, 255, 255), (thumb_x, thumb_y), 8)
+            pygame.draw.circle(screen, (255, 255, 255), (index_x, index_y), 8)
         
         # Draw status
         font = pygame.font.Font(None, 48)
