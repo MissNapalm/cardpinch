@@ -4,6 +4,7 @@ import numpy as np
 import math
 import pygame
 import sys
+import webbrowser
 
 # Constants
 CARD_COUNT = 7
@@ -16,6 +17,31 @@ CAROUSEL_CATEGORIES = [
     ["YouTube", "Netflix", "Twitch", "Spotify", "Podcasts", "Books", "Games"]
 ]
 NUM_CATEGORIES = len(CAROUSEL_CATEGORIES)
+
+# URLs for apps that can be opened
+APP_URLS = {
+    "Mail": "https://mail.google.com",
+    "Music": "https://music.apple.com",
+    "Safari": "https://www.google.com",
+    "Messages": "https://messages.google.com",
+    "Calendar": "https://calendar.google.com",
+    "Maps": "https://maps.google.com",
+    "Camera": None,
+    "Photos": "https://photos.google.com",
+    "Notes": "https://keep.google.com",
+    "Reminders": "https://keep.google.com",
+    "Clock": "https://clock.google.com",
+    "Weather": "https://weather.com",
+    "Stocks": "https://finance.yahoo.com",
+    "News": "https://news.google.com",
+    "YouTube": "https://youtube.com",
+    "Netflix": "https://netflix.com",
+    "Twitch": "https://twitch.tv",
+    "Spotify": "https://spotify.com",
+    "Podcasts": "https://podcasts.apple.com",
+    "Books": "https://books.google.com",
+    "Games": "https://store.steampowered.com"
+}
 
 # Color schemes for apps (RGB)
 APP_COLORS = {
@@ -63,6 +89,7 @@ class HandState:
         self.zoom_target = 0.0
         self.target_card_pos = None  # For animating to selected card
         self.target_category_pos = None  # For animating to selected category
+        self.last_pinch_time = 0  # Track time of last pinch for double pinch detection
 
 def get_pinch_distance(landmarks):
     if not landmarks:
@@ -292,8 +319,26 @@ def main():
                         # Use the start position for hit detection
                         tap_x = pinch_data['start_x']
                         tap_y = pinch_data['start_y']
-                        # Will check card hits after drawing
-                        pinch_state['tap_to_check'] = (tap_x, tap_y)
+                        
+                        # Check for double pinch (within 0.5 seconds)
+                        current_time = pygame.time.get_ticks() / 1000.0
+                        time_since_last_pinch = current_time - state.last_pinch_time
+                        
+                        if time_since_last_pinch < 0.5 and state.selected_card is not None and state.selected_category is not None:
+                            # Double pinch detected - open the selected app
+                            app_name = CAROUSEL_CATEGORIES[state.selected_category][state.selected_card]
+                            url = APP_URLS.get(app_name)
+                            if url:
+                                print(f"Opening {app_name} at {url}")
+                                webbrowser.open(url)
+                            else:
+                                print(f"{app_name} cannot be opened in browser")
+                            state.last_pinch_time = 0  # Reset to prevent triple-pinch
+                        else:
+                            # Single pinch - will check card hits after drawing
+                            pinch_state['tap_to_check'] = (tap_x, tap_y)
+                            state.last_pinch_time = current_time
+                    
                     del pinch_state['right']
         
         if not any_pinching and state.grabbed:
