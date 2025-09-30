@@ -317,9 +317,11 @@ def main():
         
         if right_hand is None:
             state.finger_smoother.reset()
+            state.wheel_active = False
+            state.last_finger_angle = None
         
-        # Handle wheel mode with three-finger gesture
-        if right_hand and state.selected_card is not None:
+        # Handle wheel mode with three-finger gesture (no card selection needed)
+        if right_hand:
             three_finger = detect_three_finger_gesture(right_hand)
             
             if three_finger:
@@ -342,6 +344,13 @@ def main():
                     
                     state.wheel_angle += angle_diff * 2
                     state.wheel_angle = state.wheel_angle % (2 * math.pi)
+                    
+                    # Update zoom based on rotation direction
+                    # Clockwise (positive angle_diff) = zoom in, Counter-clockwise = zoom out
+                    if angle_diff > 0:  # Clockwise
+                        state.zoom_target = min(1.0, state.zoom_target + 0.02)
+                    elif angle_diff < 0:  # Counter-clockwise
+                        state.zoom_target = max(0.0, state.zoom_target - 0.02)
                 
                 state.last_finger_angle = current_angle
             else:
@@ -442,8 +451,8 @@ def main():
         frame_surface = pygame.transform.scale(frame_surface, (320, 240))
         screen.blit(frame_surface, (WINDOW_WIDTH - 330, 10))
         
-        # Draw hand cursors with smoothing
-        if right_hand:
+        # Draw hand cursors with smoothing (hide when wheel is active)
+        if right_hand and not state.wheel_active:
             thumb_tip = right_hand[4]
             index_tip = right_hand[8]
             
