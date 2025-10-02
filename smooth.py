@@ -74,7 +74,7 @@ class HandState:
         self.smooth_card_offset = 0.0
         self.smooth_category_offset = 0.0
         self.scroll_smoothing = 0.25
-        self.scroll_gain = 5.0  # more scroll with less movement
+        self.scroll_gain = 5.0
 
         self.is_pinching = False
         self.last_pinch_x = None
@@ -100,11 +100,11 @@ class HandState:
         self.gui_scale_max = 1.80
         self.gui_scale_sensitivity = 0.32
 
-        # pinch timing
+        # pinch timing - now for launch detection only
         self.pinch_threshold = 0.08
         self.pinch_prev = False
         self.last_pinch_time = 0
-        self.double_pinch_window = 0.4  # seconds
+        self.double_pinch_window = 0.4
 
         # misc
         self.browser_process = None
@@ -114,7 +114,7 @@ class HandState:
 
         # A-OK gesture to reset zoom
         self.ok_prev = False
-        self.ok_touch_threshold = 0.035
+        self.ok_touch_threshold = 0.025  # Tighter threshold to avoid false positives
 
 
 def get_pinch_distance(landmarks):
@@ -154,7 +154,7 @@ def detect_three_finger_gesture(landmarks):
     return thumb_ext and index_ext and middle_ext and ring_fold and pinky_fold
 
 
-def detect_ok_gesture(landmarks, touch_thresh=0.035):
+def detect_ok_gesture(landmarks, touch_thresh=0.025):
     if not landmarks:
         return False
     a = landmarks[4]
@@ -163,6 +163,7 @@ def detect_ok_gesture(landmarks, touch_thresh=0.035):
     middle_ext = is_finger_extended(landmarks, 12, 10)
     ring_ext = is_finger_extended(landmarks, 16, 14)
     pinky_ext = is_finger_extended(landmarks, 20, 18)
+    # Additional check: all three fingers must be clearly extended
     return touching and middle_ext and ring_ext and pinky_ext
 
 
@@ -180,11 +181,6 @@ def calculate_finger_angle(landmarks):
 # Launch helpers (Browser / Email)
 # ==============================
 def _search_paths_for(basename_or_path):
-    """
-    Return an absolute path to the first matching file:
-    - If absolute path provided and exists, return it.
-    - Else search in script directory and current working directory.
-    """
     if not basename_or_path:
         return None
     p = os.path.expanduser(basename_or_path)
@@ -203,13 +199,7 @@ def _search_paths_for(basename_or_path):
 
 
 def try_spawn(candidates_or_paths):
-    """
-    Try a list of basenames or absolute paths.
-    Returns a Popen if successful, or raises the last error.
-    """
     last_err = None
-
-    # Env override first (used for email)
     env_app = os.environ.get("GESTURE_EMAIL_APP")
     if env_app:
         resolved = _search_paths_for(env_app)
@@ -219,7 +209,6 @@ def try_spawn(candidates_or_paths):
             except Exception as e:
                 last_err = e
 
-    # Then provided candidates
     for name in candidates_or_paths:
         resolved = _search_paths_for(name)
         if not resolved:
@@ -241,15 +230,12 @@ def launch_browser_window(state):
             print("✓ BROWSER WINDOW LAUNCHED!")
         except Exception as e:
             print(f"Error launching browser: {e}")
-            print("Make sure 'gesture_webview.py' or 'browser_window.py' exists in the same directory!")
 
 
 def launch_email_window(state):
-    """Try external email scripts. If none found, launch embedded fallback in a separate process."""
     if state.email_process is not None and state.email_process.poll() is None:
         return
 
-    # 1) Try user/env + common names
     try:
         state.email_process = try_spawn(["my_email.py", "email.py", "gesture_mail_inbox.py", "email_inbox.py"])
         print("✉️  EMAIL WINDOW LAUNCHED!")
@@ -257,17 +243,14 @@ def launch_email_window(state):
     except Exception as e:
         print(f"Email script not found / failed to start external: {e}")
 
-    # 2) Fallback: spawn this file with --email-fallback
     try:
         state.email_process = subprocess.Popen([sys.executable, os.path.abspath(__file__), "--email-fallback"])
         print("✉️  EMAIL FALLBACK LAUNCHED (embedded)!")
     except Exception as e:
         print(f"Error launching embedded email fallback: {e}")
-        print("If you prefer your own file, create one named 'my_email.py' or set GESTURE_EMAIL_APP=/path/to/your.py")
 
 
 def launch_maps_window(state):
-    """Try to launch maps window."""
     if state.maps_process is not None and state.maps_process.poll() is None:
         return
     
@@ -276,7 +259,6 @@ def launch_maps_window(state):
         print("🗺️  MAPS WINDOW LAUNCHED!")
     except Exception as e:
         print(f"Error launching maps: {e}")
-        print("Make sure 'gesture_maps.py' exists in the same directory!")
 
 
 # ==============================
@@ -318,7 +300,6 @@ def draw_cards(surface, center_x, center_y, card_offset, category_idx,
     last_vis = int((-card_offset + window_width // 2) / stride) + 2
     first_vis = max(0, first_vis)
     last_vis = min(CARD_COUNT, last_vis)
-    # non-selected behind
     for i in range(first_vis, last_vis):
         x = int(center_x + (i * stride) + card_offset)
         y = int(center_y)
@@ -326,7 +307,6 @@ def draw_cards(surface, center_x, center_y, card_offset, category_idx,
         if not sel:
             rect = draw_app_icon(surface, app_names[i], x, y, base_w, base_h, False, 1.0, gui_scale)
             card_rects.append((rect, i, category_idx))
-    # selected on top
     for i in range(first_vis, last_vis):
         x = int(center_x + (i * stride) + card_offset)
         y = int(center_y)
@@ -391,13 +371,13 @@ def carousel_main():
     WINDOW_WIDTH = 1280
     WINDOW_HEIGHT = 720
     screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
-    pygame.display.set_caption("Gesture Carousel • ⌘ Double-pinch Mail/Browser/Maps to launch")
+    pygame.display.set_caption("Gesture Carousel • ⌘ Pinch to launch Mail/Browser/Maps • Pinch-drag to scroll")
     clock = pygame.time.Clock()
 
     print("=" * 50)
     print("GESTURE CAROUSEL STARTED")
-    print("Pinch to scroll rows/columns • Tap to select • Double-pinch directly on a card to launch")
-    print("If Mail script not found, embedded inbox fallback will open.")
+    print("Pinch-drag to scroll • Pinch Mail/Browser/Maps to launch")
+    print("Other cards select on pinch • Double-pinch for extra actions")
     print("=" * 50)
 
     cap = cv2.VideoCapture(0)
@@ -411,7 +391,7 @@ def carousel_main():
 
     state = HandState()
     tap_to_check = None
-    double_pinch_to_check = None  # (x,y) of the double-pinch location
+    double_pinch_to_check = None
     running = True
 
     while running:
@@ -479,9 +459,11 @@ def carousel_main():
             state.wheel_active = False
             state.last_finger_angle = None
 
-        # Pinch scroll + tap/double-pinch detection (single, unified handler)
+        # Pinch handling: distinguish scroll from selection
         if right_hand and not state.wheel_active:
             pos = get_pinch_position(right_hand)
+            
+            # Pinch just started
             if pinch_now and not state.pinch_prev:
                 if pos:
                     px = pos[0] * WINDOW_WIDTH
@@ -491,17 +473,22 @@ def carousel_main():
                     state.last_pinch_y = py
                     state.is_pinching = True
 
+            # Pinch continuing
             elif pinch_now and state.pinch_prev and pos:
                 px = pos[0] * WINDOW_WIDTH
                 py = pos[1] * WINDOW_HEIGHT
                 if state.last_pinch_x is not None:
                     dx = px - state.last_pinch_x
                     dy = py - state.last_pinch_y
-                    # only scroll if movement is significant
+                    
+                    # Check if we've moved enough to start scrolling
                     if state.pinch_start_pos:
                         total_dx = px - state.pinch_start_pos[0]
                         total_dy = py - state.pinch_start_pos[1]
-                        if math.hypot(total_dx, total_dy) > state.movement_threshold:
+                        total_move = math.hypot(total_dx, total_dy)
+                        
+                        # Only scroll if past movement threshold
+                        if total_move > state.movement_threshold:
                             state.card_offset += dx * state.scroll_gain
                             state.category_offset += dy * state.scroll_gain
                             stride_x = int((CARD_WIDTH + CARD_SPACING) * state.gui_scale)
@@ -510,28 +497,28 @@ def carousel_main():
                             row_stride = int(ROW_BASE_SPACING * state.gui_scale)
                             min_y = -(NUM_CATEGORIES - 1) * row_stride
                             state.category_offset = clamp(state.category_offset, min_y, 0)
+                
                 state.last_pinch_x = px
                 state.last_pinch_y = py
 
+            # Pinch released
             elif not pinch_now and state.pinch_prev:
-                # pinch released — decide single-tap vs double-pinch
                 if state.pinch_start_pos and state.last_pinch_x is not None:
                     total_dx = state.last_pinch_x - state.pinch_start_pos[0]
                     total_dy = state.last_pinch_y - state.pinch_start_pos[1]
                     total_move = math.hypot(total_dx, total_dy)
 
-                    # evaluate time window
                     current_time = time.time()
                     dt = current_time - state.last_pinch_time
 
-                    # if minimal movement, queue a tap hit-test
+                    # If minimal movement, this is a SELECT action
                     if total_move <= state.movement_threshold:
                         tap_to_check = (state.last_pinch_x, state.last_pinch_y)
-
-                    # if within double-pinch window, queue a double-pinch hit-test
-                    if 0.05 < dt < state.double_pinch_window:
-                        double_pinch_to_check = (state.last_pinch_x, state.last_pinch_y)
-                        print("✓ Double pinch detected — will resolve on card under finger")
+                        
+                        # Check for double-pinch (for launch)
+                        if 0.05 < dt < state.double_pinch_window:
+                            double_pinch_to_check = (state.last_pinch_x, state.last_pinch_y)
+                            print("✓ Double pinch detected — will launch card under finger")
 
                     state.last_pinch_time = current_time
 
@@ -568,19 +555,38 @@ def carousel_main():
                 WINDOW_WIDTH, state.gui_scale, CARD_WIDTH, CARD_HEIGHT, CARD_SPACING
             )
 
-        # Resolve queued taps (selection)
+        # Resolve single pinch launch
         if tap_to_check:
             tx, ty = tap_to_check
+            launched = False
             for rect, ci, ca in all_rects:
                 if rect.collidepoint(tx, ty):
-                    state.selected_card = ci
-                    state.selected_category = ca
-                    state.zoom_target = 1.0
-                    print(f"Selected: {CAROUSEL_CATEGORIES[ca][ci]} (card {ci}, category {ca})")
+                    app_name = CAROUSEL_CATEGORIES[ca][ci]
+                    if app_name == "Mail":
+                        launch_email_window(state)
+                        print(f"✓ PINCH ON MAIL — LAUNCHING EMAIL!")
+                        launched = True
+                    elif app_name == "Browser":
+                        launch_browser_window(state)
+                        print(f"✓ PINCH ON BROWSER — LAUNCHING WINDOW!")
+                        launched = True
+                    elif app_name == "Maps":
+                        launch_maps_window(state)
+                        print(f"✓ PINCH ON MAPS — LAUNCHING MAPS!")
+                        launched = True
+                    else:
+                        # Select other cards
+                        state.selected_card = ci
+                        state.selected_category = ca
+                        state.zoom_target = 1.0
+                        print(f"✓ Selected: {app_name} (card {ci}, category {ca})")
+                        launched = True
                     break
+            if not launched:
+                print("Pinch didn't hit a card")
             tap_to_check = None
 
-        # Resolve queued double-pinch (launch under finger)
+        # Resolve double-pinch launch
         if double_pinch_to_check:
             dx, dy = double_pinch_to_check
             launched = False
@@ -609,7 +615,7 @@ def carousel_main():
         # Wheel overlay
         draw_wheel(screen, state, WINDOW_WIDTH, WINDOW_HEIGHT)
 
-        # Camera preview (top-right)
+        # Camera preview
         frame_surface = pygame.surfarray.make_surface(cv2.transpose(rgb))
         frame_surface = pygame.transform.scale(frame_surface, (320, 240))
         screen.blit(frame_surface, (WINDOW_WIDTH - 330, 10))
@@ -634,9 +640,18 @@ def carousel_main():
         if state.wheel_active:
             status = f"WHEEL • GUI {state.gui_scale:.2f}x"
         elif state.is_pinching:
-            status = "PINCHED"
+            if state.pinch_start_pos and state.last_pinch_x:
+                total_dx = state.last_pinch_x - state.pinch_start_pos[0]
+                total_dy = state.last_pinch_y - state.pinch_start_pos[1]
+                total_move = math.hypot(total_dx, total_dy)
+                if total_move > state.movement_threshold:
+                    status = "SCROLLING"
+                else:
+                    status = "PINCHED (hold to select)"
+            else:
+                status = "PINCHED"
         else:
-            status = "Ready • ⌘ Double-pinch Mail/Browser/Maps to launch"
+            status = "Ready • ⌘ Pinch Mail/Browser/Maps to launch • Pinch-drag to scroll"
         screen.blit(font.render(status, True, (255, 255, 255)), (30, 30))
 
         pygame.display.flip()
@@ -786,7 +801,7 @@ def email_fallback_main():
     last_pinch_y = None
     pinch_threshold = 0.08
     ok_prev = False
-    ok_touch_threshold = 0.035
+    ok_touch_threshold = 0.025  # Tighter to prevent false positives
     wheel_active = False
     wheel_angle = 0.0
     last_finger_angle = None
