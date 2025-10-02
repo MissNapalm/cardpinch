@@ -109,6 +109,7 @@ class HandState:
         # misc
         self.browser_process = None
         self.email_process = None
+        self.maps_process = None
         self.current_fps = 0.0
 
         # A-OK gesture to reset zoom
@@ -265,6 +266,19 @@ def launch_email_window(state):
         print("If you prefer your own file, create one named 'my_email.py' or set GESTURE_EMAIL_APP=/path/to/your.py")
 
 
+def launch_maps_window(state):
+    """Try to launch maps window."""
+    if state.maps_process is not None and state.maps_process.poll() is None:
+        return
+    
+    try:
+        state.maps_process = try_spawn(["gesture_maps.py", "maps.py", "my_maps.py"])
+        print("🗺️  MAPS WINDOW LAUNCHED!")
+    except Exception as e:
+        print(f"Error launching maps: {e}")
+        print("Make sure 'gesture_maps.py' exists in the same directory!")
+
+
 # ==============================
 # Carousel drawing
 # ==============================
@@ -377,7 +391,7 @@ def carousel_main():
     WINDOW_WIDTH = 1280
     WINDOW_HEIGHT = 720
     screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
-    pygame.display.set_caption("Gesture Carousel • ⌘ Double-pinch Mail or Browser to launch")
+    pygame.display.set_caption("Gesture Carousel • ⌘ Double-pinch Mail/Browser/Maps to launch")
     clock = pygame.time.Clock()
 
     print("=" * 50)
@@ -581,6 +595,10 @@ def carousel_main():
                         launch_browser_window(state)
                         print("✓✓✓ DOUBLE PINCH ON BROWSER — LAUNCHING WINDOW! ✓✓✓")
                         launched = True
+                    elif app_name == "Maps":
+                        launch_maps_window(state)
+                        print("✓✓✓ DOUBLE PINCH ON MAPS — LAUNCHING MAPS! ✓✓✓")
+                        launched = True
                     else:
                         print(f"Double pinch on {app_name} — no action bound")
                     break
@@ -618,7 +636,7 @@ def carousel_main():
         elif state.is_pinching:
             status = "PINCHED"
         else:
-            status = "Ready • ⌘ Double-pinch Mail/Browser to launch"
+            status = "Ready • ⌘ Double-pinch Mail/Browser/Maps to launch"
         screen.blit(font.render(status, True, (255, 255, 255)), (30, 30))
 
         pygame.display.flip()
