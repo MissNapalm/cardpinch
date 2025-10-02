@@ -15,7 +15,7 @@ CARD_SPACING = 50
 ROW_BASE_SPACING = CARD_HEIGHT + 80
 
 CAROUSEL_CATEGORIES = [
-    ["Mail", "Music", "Safari", "Messages", "Calendar", "Maps", "Camera"],
+    ["Mail", "Music", "Browser", "Messages", "Calendar", "Maps", "Camera"],
     ["Photos", "Notes", "Reminders", "Clock", "Weather", "Stocks", "News"],
     ["YouTube", "Netflix", "Twitch", "Spotify", "Podcasts", "Books", "Games"]
 ]
@@ -28,7 +28,8 @@ APP_COLORS = {
     "Reminders": (255, 69, 58), "Clock": (30, 30, 30), "Weather": (99, 204, 250),
     "Stocks": (30, 30, 30), "News": (252, 61, 86), "YouTube": (255, 0, 0),
     "Netflix": (229, 9, 20), "Twitch": (145, 70, 255), "Spotify": (30, 215, 96),
-    "Podcasts": (146, 72, 223), "Books": (255, 124, 45), "Games": (255, 45, 85)
+    "Podcasts": (146, 72, 223), "Books": (255, 124, 45), "Games": (255, 45, 85),
+    "Browser": (35, 142, 250)
 }
 
 mp_hands = mp.solutions.hands
@@ -61,6 +62,10 @@ class HandState:
         self.smooth_card_offset = 0.0
         self.smooth_category_offset = 0.0
         self.scroll_smoothing = 0.25
+
+        # NEW: scroll sensitivity (higher = more scroll per movement)
+        self.scroll_gain = 2.0
+
         self.is_pinching = False
         self.last_pinch_x = None
         self.last_pinch_y = None
@@ -75,36 +80,25 @@ class HandState:
         self.wheel_center_x = 0
         self.wheel_center_y = 0
         self.wheel_radius = 110
-        self.mode = "carousel"
-        self.ok_prev = False
-        self.ok_cooldown = 0
         self.gui_scale = 1.00
         self.gui_scale_min = 0.60
         self.gui_scale_max = 1.80
         self.gui_scale_sensitivity = 0.32
-        self.brightness = 0.75
-        self.media_volume = 0.65
-        self.alarm_volume = 0.50
-        self.wifi_on = True
-        self.bt_on = False
-        self.airplane = False
-        self.dnd = False
-        self.hotspot = False
-        self.location = True
-        self.rotation_lock = False
-        self.nfc = False
-        self.flashlight = False
-        self.battery_saver = False
-        self.mobile_data = True
-        self.dark_mode = True
         self.pinch_threshold = 0.08
-        self.ok_touch_threshold = 0.035
         self.pinch_count = 0
         self.last_pinch_time = 0
-        self.double_pinch_window = 0.5
+        self.double_pinch_window = 0.4
         self.pinch_prev = False
-        self.safari_process = None
+        self.pinch_start_pos = None
+        self.movement_threshold = 10
+        self.thumbs_up_prev = False
+        self.thumbs_up_cooldown = 0
+        self.browser_process = None
         self.current_fps = 0.0
+
+        # A-OK gesture to reset zoom
+        self.ok_prev = False
+        self.ok_touch_threshold = 0.035
 
 def get_pinch_distance(landmarks):
     if not landmarks:
@@ -138,15 +132,31 @@ def detect_three_finger_gesture(landmarks):
     pinky_fold = landmarks[20].y > landmarks[18].y - 0.02
     return thumb_ext and index_ext and middle_ext and ring_fold and pinky_fold
 
-def detect_ok_gesture(landmarks, touch_thresh):
+def detect_thumbs_up(landmarks):
+    """Detect thumbs up: thumb extended up, all other fingers folded"""
     if not landmarks:
         return False
-    a = landmarks[4]
-    b = landmarks[8]
+    
+    thumb_tip = landmarks[4]
+    thumb_ip = landmarks[3]
+    thumb_mcp = landmarks[2]
+    thumb_up = thumb_tip.y < thumb_ip.y < thumb_mcp.y
+    
+    index_fold = landmarks[8].y  > landmarks[6].y  - 0.03
+    middle_fold = landmarks[12].y > landmarks[10].y - 0.03
+    ring_fold   = landmarks[16].y > landmarks[14].y - 0.03
+    pinky_fold  = landmarks[20].y > landmarks[18].y - 0.03
+    
+    return thumb_up and index_fold and middle_fold and ring_fold and pinky_fold
+
+def detect_ok_gesture(landmarks, touch_thresh=0.035):
+    if not landmarks: 
+        return False
+    a = landmarks[4]; b = landmarks[8]
     touching = math.hypot(a.x - b.x, a.y - b.y) < touch_thresh
     middle_ext = is_finger_extended(landmarks, 12, 10)
-    ring_ext = is_finger_extended(landmarks, 16, 14)
-    pinky_ext = is_finger_extended(landmarks, 20, 18)
+    ring_ext   = is_finger_extended(landmarks, 16, 14)
+    pinky_ext  = is_finger_extended(landmarks, 20, 18)
     return touching and middle_ext and ring_ext and pinky_ext
 
 def get_hand_center(landmarks): 
@@ -157,13 +167,14 @@ def calculate_finger_angle(landmarks):
     idx = landmarks[8]
     return math.atan2(idx.y - c.y, idx.x - c.x)
 
-def launch_safari_webview(state):
-    if state.safari_process is None or state.safari_process.poll() is not None:
+def launch_browser_window(state):
+    if state.browser_process is None or state.browser_process.poll() is not None:
         try:
-            state.safari_process = subprocess.Popen([sys.executable, "gesture_webview.py"])
-            print("Launched Safari WebView!")
+            state.browser_process = subprocess.Popen([sys.executable, "gesture_webview.py"])
+            print("✓ BROWSER WINDOW LAUNCHED!")
         except Exception as e:
-            print(f"Error launching Safari: {e}")
+            print(f"Error launching browser: {e}")
+            print("Make sure 'gesture_webview.py' exists in the same directory!")
 
 def draw_app_icon(surface, app_name, x, y, base_w, base_h, is_selected=False, zoom_scale=1.0, gui_scale=1.0):
     width = int(base_w * gui_scale)
@@ -255,81 +266,15 @@ def draw_wheel(surface, state, window_width, window_height):
     pygame.draw.rect(surface, white, bg, max(1, int(2 * scale)))
     surface.blit(t, tr)
 
-def draw_slider(surface, x, y, label, value01, scale):
-    font = pygame.font.Font(None, max(22, int(46 * scale)))
-    text = font.render(label, True, (235, 240, 255))
-    surface.blit(text, (x, y))
-    tx = x + int(260 * scale)
-    ty = y + int(12 * scale)
-    tw = int(360 * scale)
-    th = int(10 * scale)
-    pygame.draw.rect(surface, (60, 66, 80), (tx, ty, tw, th), border_radius=int(6 * scale))
-    fw = int(tw * clamp(value01, 0, 1))
-    pygame.draw.rect(surface, (120, 180, 255), (tx, ty, fw, th), border_radius=int(6 * scale))
-    cx = tx + fw
-    cy = ty + th // 2
-    pygame.draw.circle(surface, (240, 245, 255), (cx, cy), int(10 * scale))
-
-def draw_tile(surface, rect, label, on, scale):
-    br = int(14 * scale)
-    fill = (70, 160, 110) if on else (50, 56, 70)
-    border = (200, 255, 220) if on else (120, 130, 150)
-    pygame.draw.rect(surface, fill, rect, border_radius=br)
-    pygame.draw.rect(surface, border, rect, width=max(1, int(2 * scale)), border_radius=br)
-    font = pygame.font.Font(None, max(18, int(40 * scale)))
-    text = font.render(label, True, (245, 248, 255))
-    surface.blit(text, text.get_rect(center=rect.center))
-
-def draw_settings_screen(surface, state, window_w, window_h):
-    s = state.gui_scale
-    surface.fill((18, 22, 30))
-    m = int(24 * s)
-    panel = pygame.Rect(m, m, window_w - 2 * m, window_h - 2 * m)
-    pygame.draw.rect(surface, (24, 28, 38), panel, border_radius=int(24 * s))
-    pygame.draw.rect(surface, (255, 255, 255), panel, max(1, int(2 * s)), border_radius=int(24 * s))
-    title_font = pygame.font.Font(None, max(28, int(64 * s)))
-    sub_font = pygame.font.Font(None, max(16, int(32 * s)))
-    surface.blit(title_font.render("Quick Settings", True, (255, 255, 255)), (panel.x + int(24 * s), panel.y + int(18 * s)))
-    surface.blit(sub_font.render("A-OK to return • Wheel resizes GUI • Double-pinch Safari to launch", True, (170, 200, 255)), (panel.x + int(24 * s), panel.y + int(18 * s) + int(56 * s)))
-    x = panel.x + int(24 * s)
-    y = panel.y + int(18 * s) + int(56 * s) + int(48 * s)
-    gap = int(56 * s)
-    draw_slider(surface, x, y, "Brightness", state.brightness, s)
-    y += gap
-    draw_slider(surface, x, y, "Media Volume", state.media_volume, s)
-    y += gap
-    draw_slider(surface, x, y, "Alarm Volume", state.alarm_volume, s)
-    grid_left = panel.x + int(24 * s)
-    grid_top = panel.y + int(18 * s) + int(56 * s) + int(48 * s) + gap * 3 + int(10 * s)
-    cols = 3
-    tile_w = int(280 * s)
-    tile_h = int(78 * s)
-    tile_gap_x = int(18 * s)
-    tile_gap_y = int(16 * s)
-    tiles = [
-        ("Wi-Fi", state.wifi_on), ("Bluetooth", state.bt_on), ("Airplane Mode", state.airplane),
-        ("Do Not Disturb", state.dnd), ("Hotspot", state.hotspot), ("Location", state.location),
-        ("Rotation Lock", state.rotation_lock), ("NFC", state.nfc)
-    ]
-    right_block_x = panel.x + panel.width // 2 + int(16 * s)
-    if right_block_x + (tile_w * cols + tile_gap_x * (cols - 1)) + int(24 * s) <= panel.right:
-        grid_left = right_block_x
-        grid_top = panel.y + int(18 * s) + int(56 * s) + int(48 * s)
-    for idx, (label, on) in enumerate(tiles):
-        r = idx // cols
-        c = idx % cols
-        rx = grid_left + c * (tile_w + tile_gap_x)
-        ry = grid_top + r * (tile_h + tile_gap_y)
-        rect = pygame.Rect(rx, ry, tile_w, tile_h)
-        draw_tile(surface, rect, label, on, s)
-    surface.blit(sub_font.render(f"GUI Scale: {state.gui_scale:.2f}x • FPS: {state.current_fps:0.1f}", True, (200, 210, 230)), (panel.x + int(24 * s), panel.bottom - int(44 * s)))
+def lm_to_screen(lm, W, H):
+    return (lm.x * W, lm.y * H)
 
 def main():
     pygame.init()
     WINDOW_WIDTH = 1280
     WINDOW_HEIGHT = 720
     screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
-    pygame.display.set_caption("Gesture Carousel • Double-pinch Safari to launch")
+    pygame.display.set_caption("Gesture Carousel • Thumbs up Browser to launch")
     clock = pygame.time.Clock()
     
     print("=" * 50)
@@ -350,8 +295,10 @@ def main():
     hands = mp_hands.Hands(max_num_hands=2, min_detection_confidence=0.5, min_tracking_confidence=0.5, model_complexity=0)
     print("Hand tracking ready")
     print("\nINSTRUCTIONS:")
-    print("1. Single pinch-tap on Safari to select it")
-    print("2. Double-pinch quickly to launch webview")
+    print("1. Pinch-tap a card to select it")
+    print("2. Thumbs up on 'Browser' to launch window")
+    print("3. Three-finger gesture to resize GUI")
+    print("4. A-OK to reset GUI zoom to 1.0x")
     print("=" * 50)
     
     state = HandState()
@@ -382,83 +329,151 @@ def main():
                 if hd.classification[0].label == "Right":
                     right_hand = hl.landmark
 
-        if state.ok_cooldown > 0:
-            state.ok_cooldown -= 1
-
         if right_hand is None:
             state.finger_smoother.reset()
             state.wheel_active = False
             state.last_finger_angle = None
-
+        
+        # A-OK resets GUI zoom to default
         ok_now = detect_ok_gesture(right_hand, state.ok_touch_threshold) if right_hand else False
-        if ok_now and not state.ok_prev and state.ok_cooldown == 0:
-            state.mode = "settings" if state.mode == "carousel" else "carousel"
-            state.ok_cooldown = 12
-            if state.mode == "settings":
+        if ok_now and not state.ok_prev:
+            state.gui_scale = 1.0
+            state.wheel_active = False
+            state.last_finger_angle = None
+            print("A-OK detected — GUI scale reset to 1.00x")
+        state.ok_prev = ok_now
+        
+        # Thumbs up cooldown
+        if state.thumbs_up_cooldown > 0:
+            state.thumbs_up_cooldown -= 1
+        
+        # Thumbs up detection to launch Browser card (card=2, category=0)
+        thumbs_up_now = detect_thumbs_up(right_hand) if right_hand else False
+        if thumbs_up_now and not state.thumbs_up_prev and state.thumbs_up_cooldown == 0:
+            if state.selected_card == 2 and state.selected_category == 0:
+                launch_browser_window(state)
+                print("👍 THUMBS UP ON BROWSER - LAUNCHING WINDOW!")
+                state.thumbs_up_cooldown = 30
+            else:
+                print(f"👍 Thumbs up detected, but not on Browser (card={state.selected_card}, cat={state.selected_category})")
+        state.thumbs_up_prev = thumbs_up_now
+
+        pinch_now = is_pinching(right_hand, state.pinch_threshold) if right_hand else False
+
+        # Three-finger wheel gesture
+        if right_hand:
+            if detect_three_finger_gesture(right_hand):
+                if not state.wheel_active:
+                    hc = get_hand_center(right_hand)
+                    state.wheel_active = True
+                    state.wheel_center_x = int(hc.x * WINDOW_WIDTH)
+                    state.wheel_center_y = int(hc.y * WINDOW_HEIGHT)
+                    state.last_finger_angle = None
+                ang = calculate_finger_angle(right_hand)
+                if state.last_finger_angle is not None:
+                    diff = ang - state.last_finger_angle
+                    if diff > math.pi: diff -= 2 * math.pi
+                    elif diff < -math.pi: diff += 2 * math.pi
+                    state.wheel_angle = (state.wheel_angle + diff * 2) % (2 * math.pi)
+                    state.gui_scale = clamp(
+                        state.gui_scale + diff * state.gui_scale_sensitivity, 
+                        state.gui_scale_min, state.gui_scale_max
+                    )
+                state.last_finger_angle = ang
+            else:
                 state.wheel_active = False
                 state.last_finger_angle = None
-        state.ok_prev = ok_now
 
-        # Double-pinch detection - check BEFORE entering pinch scroll logic
-        pinch_now = is_pinching(right_hand, state.pinch_threshold) if right_hand else False
-        double_pinch_detected = False
-        
-        # Edge detection: pinch started
-        if pinch_now and not state.pinch_prev:
-            current_time = time.time()
-            time_since_last = current_time - state.last_pinch_time
+        # Pinch scrolling + tap detection (first path)
+        if right_hand and not state.wheel_active:
+            pos = get_pinch_position(right_hand)
+            if pinch_now and not state.pinch_prev:
+                if pos:
+                    px = pos[0] * WINDOW_WIDTH
+                    py = pos[1] * WINDOW_HEIGHT
+                    state.pinch_start_pos = (px, py)
+                    state.last_pinch_x = px
+                    state.last_pinch_y = py
+                    state.is_pinching = True
             
-            # Check if this is a second pinch within the window
-            if 0.05 < time_since_last < state.double_pinch_window:
-                print(f"DOUBLE PINCH! Selected: card={state.selected_card}, cat={state.selected_category}")
-                if state.selected_card == 2 and state.selected_category == 0:
-                    launch_safari_webview(state)
-                    double_pinch_detected = True
-                    print("Launching Safari webview!")
-                else:
-                    print(f"Not on Safari (need card=2, cat=0)")
-                state.pinch_count = 0
-            else:
-                print(f"First pinch (time since last: {time_since_last:.3f}s)")
-                state.pinch_count = 1
+            elif pinch_now and state.pinch_prev and pos:
+                px = pos[0] * WINDOW_WIDTH
+                py = pos[1] * WINDOW_HEIGHT
+                
+                if state.last_pinch_x is not None:
+                    dx = px - state.last_pinch_x
+                    dy = py - state.last_pinch_y
+                    
+                    if state.pinch_start_pos:
+                        total_dx = px - state.pinch_start_pos[0]
+                        total_dy = py - state.pinch_start_pos[1]
+                        total_movement = math.hypot(total_dx, total_dy)
+                        
+                        if total_movement > state.movement_threshold:
+                            # APPLY SCROLL GAIN HERE
+                            state.card_offset += dx * state.scroll_gain
+                            state.category_offset += dy * state.scroll_gain
+                            stride_x = int((CARD_WIDTH + CARD_SPACING) * state.gui_scale)
+                            min_x = -(CARD_COUNT - 1) * stride_x
+                            state.card_offset = clamp(state.card_offset, min_x, 0)
+                            row_stride = int(ROW_BASE_SPACING * state.gui_scale)
+                            min_y = -(NUM_CATEGORIES - 1) * row_stride
+                            state.category_offset = clamp(state.category_offset, min_y, 0)
+                
+                state.last_pinch_x = px
+                state.last_pinch_y = py
             
-            state.last_pinch_time = current_time
+            elif not pinch_now and state.pinch_prev:
+                if state.pinch_start_pos and state.last_pinch_x is not None:
+                    total_dx = state.last_pinch_x - state.pinch_start_pos[0]
+                    total_dy = state.last_pinch_y - state.pinch_start_pos[1]
+                    total_movement = math.hypot(total_dx, total_dy)
+                    
+                    if total_movement <= state.movement_threshold:
+                        tap_to_check = state.pinch_start_pos
+                        
+                        current_time = time.time()
+                        time_since_last = current_time - state.last_pinch_time
+                        
+                        print(f"TAP! Δt={time_since_last:.3f}s, Selected: card={state.selected_card}, cat={state.selected_category}")
+                        
+                        if time_since_last < state.double_pinch_window and time_since_last > 0.05:
+                            if state.selected_card == 2 and state.selected_category == 0:
+                                launch_browser_window(state)
+                                print("✓✓✓ DOUBLE TAP ON BROWSER - LAUNCHING! ✓✓✓")
+                            else:
+                                print(f"Double tap, but not on Browser (card={state.selected_card}, cat={state.selected_category})")
+                        
+                        state.last_pinch_time = current_time
+                
+                state.is_pinching = False
+                state.last_pinch_x = None
+                state.last_pinch_y = None
+                state.pinch_start_pos = None
+        else:
+            state.is_pinching = False
+            state.last_pinch_x = None
+            state.last_pinch_y = None
+            state.pinch_start_pos = None
         
         state.pinch_prev = pinch_now
 
-        if state.mode == "carousel":
-            if right_hand:
-                if detect_three_finger_gesture(right_hand):
-                    if not state.wheel_active:
-                        hc = get_hand_center(right_hand)
-                        state.wheel_active = True
-                        state.wheel_center_x = int(hc.x * WINDOW_WIDTH)
-                        state.wheel_center_y = int(hc.y * WINDOW_HEIGHT)
-                        state.last_finger_angle = None
-                    ang = calculate_finger_angle(right_hand)
-                    if state.last_finger_angle is not None:
-                        diff = ang - state.last_finger_angle
-                        if diff > math.pi:
-                            diff -= 2 * math.pi
-                        elif diff < -math.pi:
-                            diff += 2 * math.pi
-                        state.wheel_angle = (state.wheel_angle + diff * 2) % (2 * math.pi)
-                        state.gui_scale = clamp(state.gui_scale + diff * state.gui_scale_sensitivity, state.gui_scale_min, state.gui_scale_max)
-                    state.last_finger_angle = ang
-                else:
-                    state.wheel_active = False
-                    state.last_finger_angle = None
+        # Three-finger wheel gesture handled above
 
-            if right_hand and not state.wheel_active and not double_pinch_detected:
-                pos = get_pinch_position(right_hand)
-                if pinch_now and pos:
-                    px = pos[0] * WINDOW_WIDTH
-                    py = pos[1] * WINDOW_HEIGHT
-                    if state.is_pinching and state.last_pinch_x is not None:
-                        dx = px - state.last_pinch_x
-                        dy = py - state.last_pinch_y
-                        state.card_offset += dx
-                        state.category_offset += dy
+        # Pinch scrolling + tap detection (second path—kept for stability)
+        if right_hand and not state.wheel_active:
+            pos = get_pinch_position(right_hand)
+            if pinch_now and pos:
+                px = pos[0] * WINDOW_WIDTH
+                py = pos[1] * WINDOW_HEIGHT
+                if state.is_pinching and state.last_pinch_x is not None:
+                    dx = px - state.last_pinch_x
+                    dy = py - state.last_pinch_y
+                    
+                    if abs(dx) > 5 or abs(dy) > 5:
+                        # APPLY SCROLL GAIN HERE AS WELL
+                        state.card_offset += dx * state.scroll_gain
+                        state.category_offset += dy * state.scroll_gain
                         stride_x = int((CARD_WIDTH + CARD_SPACING) * state.gui_scale)
                         min_x = -(CARD_COUNT - 1) * stride_x
                         state.card_offset = clamp(state.card_offset, min_x, 0)
@@ -467,83 +482,100 @@ def main():
                         state.category_offset = clamp(state.category_offset, min_y, 0)
                     else:
                         tap_to_check = (px, py)
-                    state.last_pinch_x = px
-                    state.last_pinch_y = py
-                    state.is_pinching = True
                 else:
-                    state.is_pinching = False
-                    state.last_pinch_x = None
-                    state.last_pinch_y = None
+                    tap_to_check = (px, py)
+                
+                state.last_pinch_x = px
+                state.last_pinch_y = py
+                state.is_pinching = True
             else:
+                if state.is_pinching:
+                    current_time = time.time()
+                    time_since_last = current_time - state.last_pinch_time
+                    print(f"Pinch released! Δt={time_since_last:.3f}s, Selected: card={state.selected_card}, cat={state.selected_category}")
+                    
+                    if time_since_last < state.double_pinch_window:
+                        print("Double pinch detected!")
+                        if state.selected_card == 2 and state.selected_category == 0:
+                            launch_browser_window(state)
+                            print("✓ Double pinch on Browser - launching window!")
+                        else:
+                            print(f"✗ Not on Browser (need card=2, cat=0, got card={state.selected_card}, cat={state.selected_category})")
+                    
+                    state.last_pinch_time = current_time
+                
                 state.is_pinching = False
                 state.last_pinch_x = None
                 state.last_pinch_y = None
         else:
-            state.wheel_active = False
             state.is_pinching = False
             state.last_pinch_x = None
             state.last_pinch_y = None
-            state.last_finger_angle = None
+        
+        state.pinch_prev = pinch_now
 
         state.zoom_progress += (state.zoom_target - state.zoom_progress) * 0.15
         if abs(state.zoom_progress - state.zoom_target) < 0.01:
             state.zoom_progress = state.zoom_target
 
-        if state.mode == "carousel":
-            s = state.scroll_smoothing
-            state.smooth_card_offset += (state.card_offset - state.smooth_card_offset) * s
-            state.smooth_category_offset += (state.category_offset - state.smooth_category_offset) * s
+        s = state.scroll_smoothing
+        state.smooth_card_offset += (state.card_offset - state.smooth_card_offset) * s
+        state.smooth_category_offset += (state.category_offset - state.smooth_category_offset) * s
 
-        if state.mode == "carousel":
-            screen.fill((20, 20, 30))
-            cx = WINDOW_WIDTH // 2
-            cy = WINDOW_HEIGHT // 2
-            all_rects = []
-            row_stride = int(ROW_BASE_SPACING * state.gui_scale)
-            first_cat = max(0, int(-state.smooth_category_offset / row_stride) - 1)
-            last_cat = min(NUM_CATEGORIES, int((-state.smooth_category_offset + WINDOW_HEIGHT) / row_stride) + 2)
-            for cat_idx in range(first_cat, last_cat):
-                y = cy + (cat_idx * row_stride) + state.smooth_category_offset
-                all_rects += draw_cards(screen, cx, int(y), state.smooth_card_offset, cat_idx, state.selected_card, state.selected_category, state.zoom_progress, WINDOW_WIDTH, state.gui_scale, CARD_WIDTH, CARD_HEIGHT, CARD_SPACING)
-            if tap_to_check:
-                tx, ty = tap_to_check
-                for rect, ci, ca in all_rects:
-                    if rect.collidepoint(tx, ty):
-                        state.selected_card = ci
-                        state.selected_category = ca
-                        state.zoom_target = 1.0
-                        print(f"Selected: {CAROUSEL_CATEGORIES[ca][ci]} (card {ci}, category {ca})")
-                        break
-                tap_to_check = None
-            draw_wheel(screen, state, WINDOW_WIDTH, WINDOW_HEIGHT)
-        else:
-            draw_settings_screen(screen, state, WINDOW_WIDTH, WINDOW_HEIGHT)
+        # Draw carousel
+        screen.fill((20, 20, 30))
+        cx = WINDOW_WIDTH // 2
+        cy = WINDOW_HEIGHT // 2
+        all_rects = []
+        row_stride = int(ROW_BASE_SPACING * state.gui_scale)
+        first_cat = max(0, int(-state.smooth_category_offset / row_stride) - 1)
+        last_cat = min(NUM_CATEGORIES, int((-state.smooth_category_offset + WINDOW_HEIGHT) / row_stride) + 2)
+        for cat_idx in range(first_cat, last_cat):
+            y = cy + (cat_idx * row_stride) + state.smooth_category_offset
+            all_rects += draw_cards(screen, cx, int(y), state.smooth_card_offset, cat_idx, state.selected_card, state.selected_category, state.zoom_progress, WINDOW_WIDTH, state.gui_scale, CARD_WIDTH, CARD_HEIGHT, CARD_SPACING)
+        
+        if tap_to_check:
+            tx, ty = tap_to_check
+            for rect, ci, ca in all_rects:
+                if rect.collidepoint(tx, ty):
+                    state.selected_card = ci
+                    state.selected_category = ca
+                    state.zoom_target = 1.0
+                    print(f"Selected: {CAROUSEL_CATEGORIES[ca][ci]} (card {ci}, category {ca})")
+                    break
+            tap_to_check = None
+        
+        draw_wheel(screen, state, WINDOW_WIDTH, WINDOW_HEIGHT)
 
+        # Draw camera feed
         frame_surface = pygame.surfarray.make_surface(cv2.transpose(rgb))
         frame_surface = pygame.transform.scale(frame_surface, (320, 240))
         screen.blit(frame_surface, (WINDOW_WIDTH - 330, 10))
 
+        # Draw hand tracking
         if right_hand:
             tt = right_hand[4]
             it = right_hand[8]
-            (tx, ty), (ix, iy) = state.finger_smoother.update((tt.x * WINDOW_WIDTH, tt.y * WINDOW_HEIGHT), (it.x * WINDOW_WIDTH, it.y * WINDOW_HEIGHT))
-            is_p = is_pinching(right_hand, state.pinch_threshold)
-            if state.mode == "carousel" and not state.wheel_active and is_p:
+            (tx, ty), (ix, iy) = state.finger_smoother.update(
+                lm_to_screen(tt, WINDOW_WIDTH, WINDOW_HEIGHT),
+                lm_to_screen(it, WINDOW_WIDTH, WINDOW_HEIGHT)
+            )
+            is_p = pinch_now
+            if not state.wheel_active and is_p:
                 pygame.draw.line(screen, (255, 255, 255), (int(tx), int(ty)), (int(ix), int(iy)), 2)
             pygame.draw.circle(screen, (255, 255, 255), (int(tx), int(ty)), 8)
             pygame.draw.circle(screen, (255, 255, 255), (int(ix), int(iy)), 8)
         else:
             state.finger_smoother.reset()
 
+        # Status text
         font = pygame.font.Font(None, 48)
-        if state.mode == "settings":
-            status = f"SETTINGS • GUI {state.gui_scale:.2f}x (A-OK to exit)"
-        elif state.wheel_active:
+        if state.wheel_active:
             status = f"WHEEL • GUI {state.gui_scale:.2f}x"
         elif state.is_pinching:
             status = "PINCHED"
         else:
-            status = "Ready • Double-pinch Safari to launch"
+            status = "Ready • Thumbs up Browser to launch"
         screen.blit(font.render(status, True, (255, 255, 255)), (30, 30))
 
         pygame.display.flip()
